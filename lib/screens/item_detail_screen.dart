@@ -1,73 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 import '../providers/item_provider.dart';
 import '../models/item.dart';
-import 'booking_screen.dart';   // ⬅️ make sure this is present
+import 'booking_screen.dart';
 
-class ItemDetailScreen extends StatefulWidget {
+class ItemDetailScreen extends StatelessWidget {
   final RentItem item;
   const ItemDetailScreen({super.key, required this.item});
 
   @override
-  State<ItemDetailScreen> createState() => _ItemDetailScreenState();
-}
-
-class _ItemDetailScreenState extends State<ItemDetailScreen> {
-  String? _contactRevealed;
-
-  @override
-  void initState() {
-    super.initState();
-    final provider = context.read<ItemProvider>();
-    _contactRevealed = provider.getContactIfPaid(widget.item.docId!);
-  }
-
-  void _proceedToBooking() async {
-    final result = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(builder: (_) => BookingScreen(item: widget.item)),
-    );
-    if (result == true && mounted) {
-      final provider = context.read<ItemProvider>();
-      provider.payForItem(widget.item.docId!);
-      setState(() {
-        _contactRevealed = provider.getContactIfPaid(widget.item.docId!);
-      });
-      _showContactDialog();
-    }
-  }
-
-  void _showContactDialog() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Payment Successful!'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Here is the renter contact:'),
-            const SizedBox(height: 8),
-            Text(
-              _contactRevealed ?? 'N/A',
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-            ),
-          ],
-        ),
-        actions: [
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
   Widget build(BuildContext context) {
     final provider = context.watch<ItemProvider>();
-    final isFav = provider.isFavorite(widget.item.docId!);
+    final isFav = provider.isFavorite(item.docId!);
+    final rented = provider.isItemCurrentlyRented(item.docId!);
 
     return Scaffold(
       appBar: AppBar(
@@ -78,7 +25,7 @@ class _ItemDetailScreenState extends State<ItemDetailScreen> {
               isFav ? Icons.favorite : Icons.favorite_border,
               color: isFav ? Colors.red : null,
             ),
-            onPressed: () => provider.toggleFavorite(widget.item.docId!),
+            onPressed: () => provider.toggleFavorite(item.docId!),
           ),
         ],
       ),
@@ -86,15 +33,25 @@ class _ItemDetailScreenState extends State<ItemDetailScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Image.network(
-              widget.item.imageUrl,
-              width: double.infinity,
+            // Swipeable images
+            SizedBox(
               height: 300,
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => Container(
-                height: 300,
+              width: double.infinity,
+              child: item.imageUrls.isNotEmpty
+                  ? PageView.builder(
+                itemCount: item.imageUrls.length,
+                itemBuilder: (_, index) => Image.network(
+                  item.imageUrls[index],
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => Container(
+                    color: Colors.grey.shade300,
+                    child: const Icon(Icons.image_not_supported, size: 64),
+                  ),
+                ),
+              )
+                  : Container(
                 color: Colors.grey.shade300,
-                child: const Center(child: Icon(Icons.image_not_supported, size: 64)),
+                child: const Icon(Icons.image_not_supported, size: 64),
               ),
             ),
             Padding(
@@ -102,94 +59,159 @@ class _ItemDetailScreenState extends State<ItemDetailScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    widget.item.title,
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
+                  if (rented)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade100,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Text('Rented', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
                     ),
-                  ),
                   const SizedBox(height: 8),
-                  // Dynamic distance from provider
+                  Text(item.title, style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
                   Consumer<ItemProvider>(
                     builder: (context, provider, _) {
-                      final dist = provider.getDistanceInKm(
-                          widget.item.latitude, widget.item.longitude);
+                      final dist = provider.getDistanceInKm(item.latitude, item.longitude);
                       return Row(
                         children: [
                           const Icon(Icons.location_on, size: 18, color: Colors.grey),
                           const SizedBox(width: 4),
                           Text(
                             dist != null ? '~ ${dist.toStringAsFixed(1)} km away' : '...',
-                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              color: Colors.grey.shade700,
-                            ),
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey.shade700),
                           ),
                         ],
                       );
                     },
                   ),
                   const SizedBox(height: 16),
-                  Text(
-                    widget.item.description,
-                    style: Theme.of(context).textTheme.bodyLarge,
-                  ),
+                  Text(item.description, style: Theme.of(context).textTheme.bodyLarge),
                   const SizedBox(height: 24),
                   Row(
                     children: [
-                      Expanded(
-                        child: _PriceOption(
-                          label: 'Per Hour',
-                          price: widget.item.pricePerHour,
-                        ),
-                      ),
+                      Expanded(child: _PriceOption(label: 'Per Hour', price: item.pricePerHour)),
                       const SizedBox(width: 12),
-                      Expanded(
-                        child: _PriceOption(
-                          label: 'Per Day',
-                          price: widget.item.pricePerDay,
-                        ),
-                      ),
+                      Expanded(child: _PriceOption(label: 'Per Day', price: item.pricePerDay)),
                     ],
                   ),
                   const SizedBox(height: 24),
-                  if (_contactRevealed != null)
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.green.shade50,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.green.shade200),
-                      ),
-                      child: Column(
-                        children: [
-                          const Icon(Icons.check_circle, color: Colors.green, size: 28),
-                          const SizedBox(height: 8),
-                          const Text('Contact Unlocked',
-                              style: TextStyle(fontWeight: FontWeight.bold)),
-                          const SizedBox(height: 4),
-                          Text(
-                            _contactRevealed!,
-                            style: const TextStyle(fontSize: 16),
-                          ),
-                        ],
-                      ),
-                    )
-                  else
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton.icon(
-                        onPressed: _proceedToBooking,   // ⬅️ use the new method
-                        icon: const Icon(Icons.lock_open),
-                        label: const Text('Pay to Reveal Contact'),
-                        style: FilledButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => BookingScreen(item: item)),
+                        );
+                      },
+                      icon: const Icon(Icons.calendar_today),
+                      label: const Text('Book Now'),
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       ),
                     ),
+                  ),
+                  const SizedBox(height: 24),
+                  const Text('Approximate Location', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    height: 200,
+                    width: double.infinity,
+                    child: FlutterMap(
+                      options: MapOptions(
+                        initialCenter: LatLng(item.latitude, item.longitude),
+                        initialZoom: 14.0,
+                        interactionOptions: const InteractionOptions(flags: ~InteractiveFlag.rotate),
+                      ),
+                      children: [
+                        TileLayer(
+                          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                          userAgentPackageName: 'com.example.rent_app',
+                        ),
+                        CircleLayer(
+                          circles: [
+                            CircleMarker(
+                              point: LatLng(item.latitude, item.longitude),
+                              radius: 1000, // 1 km radius
+                              color: Colors.blue.withOpacity(0.2),
+                              borderColor: Colors.blue,
+                              borderStrokeWidth: 2,
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  ExpansionTile(
+                    title: FutureBuilder<double>(
+                      future: provider.getAverageRating(item.docId!),
+                      builder: (context, snapshot) {
+                        final avg = snapshot.data ?? 0.0;
+                        return Row(
+                          children: [
+                            const Icon(Icons.star, color: Colors.amber, size: 20),
+                            const SizedBox(width: 4),
+                            Text(avg.toStringAsFixed(1),
+                                style: const TextStyle(fontWeight: FontWeight.bold)),
+                            const Text('  Reviews'),
+                          ],
+                        );
+                      },
+                    ),
+                    children: [
+                      FutureBuilder<List<Map<String, dynamic>>>(
+                        future: provider.getReviewsForItem(item.docId!),
+                        builder: (context, snapshot) {
+                          if (!snapshot.hasData) {
+                            return const Padding(
+                            padding: EdgeInsets.all(16),
+                            child: Center(child: CircularProgressIndicator()),
+                          );
+                          }
+                          final reviews = snapshot.data!;
+                          if (reviews.isEmpty) {
+                            return const Padding(
+                            padding: EdgeInsets.all(16),
+                            child: Text('No reviews yet.'),
+                          );
+                          }
+                          return Column(
+                            children: reviews.map((review) {
+                              final rating = (review['rating'] as num?)?.toDouble() ?? 0;
+                              final comment = review['comment'] as String? ?? '';
+                              final reviewerUid = review['reviewerUid'] as String? ?? '';
+                              return FutureBuilder<String>(
+                                future: provider.getUserName(reviewerUid),
+                                builder: (context, nameSnapshot) {
+                                  final name = nameSnapshot.data ?? 'Loading...';
+                                  return ListTile(
+                                    leading: CircleAvatar(child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?')),
+                                    title: Text(name),
+                                    subtitle: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: List.generate(5, (i) => Icon(
+                                            i < rating.toInt() ? Icons.star : Icons.star_border,
+                                            size: 16, color: Colors.amber,
+                                          )),
+                                        ),
+                                        if (comment.isNotEmpty) Text(comment),
+                                      ],
+                                    ),
+                                  );
+                                },
+                              );
+                            }).toList(),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -199,6 +221,8 @@ class _ItemDetailScreenState extends State<ItemDetailScreen> {
     );
   }
 }
+
+
 
 class _PriceOption extends StatelessWidget {
   final String label;
@@ -215,18 +239,13 @@ class _PriceOption extends StatelessWidget {
       ),
       child: Column(
         children: [
-          Text(label,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              )),
+          Text(label, style: Theme.of(context).textTheme.bodySmall),
           const SizedBox(height: 4),
-          Text(
-            '\$${price.toStringAsFixed(2)}',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.bold,
-              color: Theme.of(context).colorScheme.primary,
-            ),
-          ),
+          Text('\$${price.toStringAsFixed(2)}',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: Theme.of(context).colorScheme.primary,
+              )),
         ],
       ),
     );

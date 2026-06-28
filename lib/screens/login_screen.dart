@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'phone_verification_screen.dart';
+import 'package:provider/provider.dart';
+import 'package:rent_app/screens/home_screen.dart';
+import '../providers/item_provider.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -13,6 +15,8 @@ class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _nameController = TextEditingController();
+  final _phoneController = TextEditingController();
   bool _obscurePassword = true;
   bool _isSignUp = false;
   bool _loading = false;
@@ -27,19 +31,25 @@ class _LoginScreenState extends State<LoginScreen> {
           email: _emailController.text.trim(),
           password: _passwordController.text.trim(),
         );
-        // After sign-up, go to phone verification
-        if (mounted) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (_) => const PhoneVerificationScreen()),
-          );
-        }
+        // Save name and phone to Firestore
+        final provider = context.read<ItemProvider>();
+        await provider.updateUserProfile(
+          name: _nameController.text.trim(),
+          phone: _phoneController.text.trim(),
+        );
+        // AuthGate will automatically switch to HomeScreen
       } else {
         await FirebaseAuth.instance.signInWithEmailAndPassword(
           email: _emailController.text.trim(),
           password: _passwordController.text.trim(),
         );
-        // AuthGate in main.dart will navigate to Home automatically
+      }
+      if (mounted) {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const HomeScreen()),
+              (route) => false,
+        );
       }
     } on FirebaseAuthException catch (e) {
       String message = 'Authentication failed';
@@ -86,6 +96,33 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                   const SizedBox(height: 32),
+                  if (_isSignUp) ...[
+                    TextFormField(
+                      controller: _nameController,
+                      decoration: InputDecoration(
+                        labelText: 'Full Name',
+                        prefixIcon: const Icon(Icons.person_outline),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      validator: (v) => v!.isEmpty ? 'Please enter your name' : null,
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _phoneController,
+                      keyboardType: TextInputType.phone,
+                      decoration: InputDecoration(
+                        labelText: 'Phone Number',
+                        prefixIcon: const Icon(Icons.phone_outlined),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      validator: (v) => v!.isEmpty ? 'Please enter your phone number' : null,
+                    ),
+                    const SizedBox(height: 16),
+                  ],
                   TextFormField(
                     controller: _emailController,
                     keyboardType: TextInputType.emailAddress,
@@ -116,8 +153,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                    validator: (v) =>
-                    v!.length < 6 ? 'Min 6 characters' : null,
+                    validator: (v) => v!.length < 6 ? 'Min 6 characters' : null,
                   ),
                   const SizedBox(height: 24),
                   SizedBox(
@@ -144,8 +180,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 16),
                   TextButton(
-                    onPressed: () =>
-                        setState(() => _isSignUp = !_isSignUp),
+                    onPressed: () => setState(() => _isSignUp = !_isSignUp),
                     child: Text(_isSignUp
                         ? 'Already have an account? Sign In'
                         : "Don't have an account? Sign Up"),
@@ -159,3 +194,4 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 }
+

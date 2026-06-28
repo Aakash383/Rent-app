@@ -33,6 +33,7 @@ class ItemProvider extends ChangeNotifier {
 
   ItemProvider() {
     _loadItems();
+    _loadAverageRatings();
     _loadFavorites();
     _getCurrentLocation(); // fetch location on creation
   }
@@ -103,16 +104,40 @@ class ItemProvider extends ChangeNotifier {
   }
 
   // --- Items from Firestore ---
+  // Inside ItemProvider class
+
+  Map<String, double> _averageRatings = {};
+  Map<String, double> get averageRatings => _averageRatings;
+
+// Modify _loadItems to also load average ratings
   Future<void> _loadItems() async {
     try {
       final snapshot = await _firestore.collection('items').get();
       _allItems = snapshot.docs
           .map((doc) => RentItem.fromMap(doc.id, doc.data()))
           .toList();
+      await _loadAverageRatings();
+      await _loadActiveRentals();
       notifyListeners();
     } catch (e) {
       debugPrint('Error loading items: $e');
     }
+  }
+
+  Future<void> _loadAverageRatings() async {
+    for (var item in _allItems) {
+      _averageRatings[item.docId!] = await getAverageRating(item.docId!);
+    }
+    notifyListeners();
+  }
+
+// Add a helper to fetch a user’s name by uid
+  Future<String> getUserName(String uid) async {
+    final doc = await _firestore.collection('users').doc(uid).get();
+    if (doc.exists && doc.data() != null) {
+      return doc.data()!['name'] as String? ?? 'Unknown';
+    }
+    return 'Unknown';
   }
 
   // --- Favorites ---
@@ -135,6 +160,7 @@ class ItemProvider extends ChangeNotifier {
       debugPrint('Error loading favorites: $e');
     }
   }
+
 
   Future<void> _saveFavorites() async {
     final user = FirebaseAuth.instance.currentUser;
@@ -162,8 +188,10 @@ class ItemProvider extends ChangeNotifier {
 
   // --- Filtering with dynamic distance ---
   List<RentItem> get filteredItems {
+    // start with ALL items (including rented)
     List<RentItem> result = _allItems;
 
+    // Apply search query
     if (_searchQuery.isNotEmpty) {
       result = result
           .where((item) =>
@@ -171,6 +199,14 @@ class ItemProvider extends ChangeNotifier {
           .toList();
     }
 
+
+    // Optional: filter out rented if the user has toggled "show only available"
+    if (!_showRentedItems) {
+      result = result.where((item) => !isItemCurrentlyRented(item.docId!)).toList();
+    }
+
+
+    // Apply distance filter (within range)
     if (_userLat != null && _userLng != null) {
       List<RentItem> withinRange = [];
       for (var item in result) {
@@ -181,7 +217,26 @@ class ItemProvider extends ChangeNotifier {
       }
       return withinRange.isNotEmpty ? withinRange : result;
     }
+
     return result;
+  }
+
+  bool _showRentedItems = true;   // default: show all
+  bool get showRentedItems => _showRentedItems;
+
+  void setShowRentedItems(bool value) {
+    _showRentedItems = value;
+    notifyListeners();
+  }
+
+  Future<Map<String, dynamic>> getUserProfile() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return {};
+    final doc = await _firestore.collection('users').doc(user.uid).get();
+    if (doc.exists && doc.data() != null) {
+      return doc.data()!;
+    }
+    return {};
   }
 
   bool isItemInRange(RentItem item) {
@@ -204,6 +259,7 @@ class ItemProvider extends ChangeNotifier {
     _paidItems[itemId] = true;
     notifyListeners();
   }
+
 
   bool hasPaidForItem(String itemId) => _paidItems[itemId] ?? false;
 
@@ -228,32 +284,23 @@ class ItemProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> addItem(RentItem item, String? imageFilePath) async {
+  Future<void> addItem(RentItem item, List<String> imageFilePaths) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) throw Exception('Must be logged in');
 
-    // Ensure we have location
-    if (_userLat == null || _userLng == null) {
-      await _getCurrentLocation();
-    }
-    if (_userLat == null || _userLng == null) {
-      throw Exception('Location not available');
-    }
-
-    String imageUrl = item.imageUrl;
-    if (imageFilePath != null) {
-      final uploadedUrl = await uploadImage(imageFilePath);
-      if (uploadedUrl != null) imageUrl = uploadedUrl;
+    // Upload all images
+    List<String> uploadedUrls = [];
+    for (final path in imageFilePaths) {
+      final url = await uploadImage(path);
+      if (url != null) uploadedUrls.add(url);
     }
 
-    await _firestore.collection('items').add({
-      ...item.toMap(),
-      'imageUrl': imageUrl,
-      'latitude': _userLat,
-      'longitude': _userLng,
-      'ownerUid': user.uid,
-    });
+    // Use the location already set in the item (from map picker)
+    final data = item.toMap();
+    data['imageUrls'] = uploadedUrls;
+    data['ownerUid'] = user.uid;
 
+    await _firestore.collection('items').add(data);
     await _loadItems();
   }
 
@@ -280,6 +327,14 @@ class ItemProvider extends ChangeNotifier {
       'phoneVerified': true,   // mark as verified
     }, SetOptions(merge: true));
   }
+  Future<void> updateUserProfile({String? name, String? phone}) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    final data = <String, dynamic>{};
+    if (name != null) data['name'] = name;
+    if (phone != null) data['phone'] = phone;
+    await _firestore.collection('users').doc(user.uid).set(data, SetOptions(merge: true));
+  }
 
   Future<String?> getUserPhone() async {
     final user = FirebaseAuth.instance.currentUser;
@@ -287,5 +342,240 @@ class ItemProvider extends ChangeNotifier {
     final doc = await _firestore.collection('users').doc(user.uid).get();
     return doc.data()?['phone'] as String?;
   }
+
+  Future<void> addBooking({
+    required String itemId,
+    required String renterUid,
+    required DateTime bookingDate,
+    required TimeOfDay bookingTime,
+    required String durationType,
+    required int quantity,
+    required double totalPrice,
+    required String itemTitle,
+    required String itemImageUrl,
+    required String renterContact,
+  }) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    // 1. Compute the new booking start & end (including grace)
+    final startDateTime = DateTime(
+      bookingDate.year, bookingDate.month, bookingDate.day,
+      bookingTime.hour, bookingTime.minute,
+    );
+    final rentalDuration = durationType == 'hour'
+        ? Duration(hours: quantity)
+        : Duration(days: quantity);
+    final endDateTime = startDateTime.add(rentalDuration);
+    final rentedUntil = endDateTime.add(const Duration(hours: 1));  // grace
+
+    // 2. OVERLAP CHECK (add exactly this block)
+    final now = DateTime.now();
+    final futureBookingsSnapshot = await _firestore
+        .collection('bookings')
+        .where('itemId', isEqualTo: itemId)
+        .where('rentedUntil', isGreaterThan: Timestamp.fromDate(now))
+        .get();
+
+    for (var doc in futureBookingsSnapshot.docs) {
+      final bData = doc.data();
+      final bDate = (bData['bookingDate'] as Timestamp).toDate();
+      final bTimeStr = bData['bookingTime'] as String? ?? '00:00';
+      final parts = bTimeStr.split(':');
+      final bStart = DateTime(
+        bDate.year, bDate.month, bDate.day,
+        int.tryParse(parts[0]) ?? 0,
+        int.tryParse(parts[1]) ?? 0,
+      );
+      // The blocked end time is the existing booking's rentedUntil (includes grace)
+      final bBlockedEnd = (bData['rentedUntil'] as Timestamp).toDate();
+
+      if (startDateTime.isBefore(bBlockedEnd)) {
+        throw Exception(
+          'This item is already booked from '
+              '${bStart.toString().substring(0, 16)} to ${bBlockedEnd.toString().substring(0, 16)}. '
+              'Please choose a different time.',
+        );
+      }
+    }
+    // END OVERLAP CHECK
+
+    // 3. Get buyer phone
+    final userDoc = await _firestore.collection('users').doc(user.uid).get();
+    final buyerPhone = userDoc.data()?['phone'] as String? ?? '';
+
+    // 4. Save booking
+    final docRef = await _firestore.collection('bookings').add({
+      'itemId': itemId,
+      'renterUid': renterUid,
+      'bookerUid': user.uid,
+      'bookerContact': buyerPhone,
+      'bookingDate': Timestamp.fromDate(bookingDate),
+      'bookingTime': '${bookingTime.hour}:${bookingTime.minute}',
+      'durationType': durationType,
+      'quantity': quantity,
+      'totalPrice': totalPrice,
+      'itemTitle': itemTitle,
+      'itemImageUrl': itemImageUrl,
+      'renterContact': renterContact,
+      'rentedUntil': Timestamp.fromDate(rentedUntil),
+      'timestamp': FieldValue.serverTimestamp(),
+    });
+
+    await docRef.update({'bookingId': docRef.id});
+
+    // 5. Update item document
+    await _firestore.collection('items').doc(itemId).update({
+      'rentedUntil': Timestamp.fromDate(rentedUntil),
+      'currentBookerUid': user.uid,
+    });
+
+    // 6. Refresh local data
+    await _loadItems();
+  }
+
+
+
+  Future<List<Map<String, dynamic>>> getUserBookings() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return [];
+    final snapshot = await _firestore
+        .collection('bookings')
+        .where('bookerUid', isEqualTo: user.uid)
+        .orderBy('timestamp', descending: true)
+        .get();
+    return snapshot.docs.map((doc) => doc.data()).toList();
+  }
+
+  Future<Map<String, dynamic>?> getActiveBookingForItem(String itemId) async {
+    final now = DateTime.now();
+    final snapshot = await _firestore
+        .collection('bookings')
+        .where('itemId', isEqualTo: itemId)
+        .where('rentedUntil', isGreaterThan: Timestamp.fromDate(now))
+        .limit(1)
+        .get();
+    if (snapshot.docs.isNotEmpty) {
+      return snapshot.docs.first.data();
+    }
+    return null;
+  }
+
+  // Submit a review (one per booking)
+  Future<void> submitReview({
+    required String itemId,
+    required String bookingId,
+    required double rating,
+    required String comment,
+  }) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    await _firestore.collection('reviews').add({
+      'itemId': itemId,
+      'bookingId': bookingId,
+      'reviewerUid': user.uid,
+      'rating': rating,
+      'comment': comment,
+      'timestamp': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> getFutureBookingsForItem(String itemId) async {
+    final now = DateTime.now();
+    final snapshot = await _firestore
+        .collection('bookings')
+        .where('itemId', isEqualTo: itemId)
+        .where('rentedUntil', isGreaterThan: Timestamp.fromDate(now))
+        .orderBy('bookingDate', descending: false)
+        .get();
+
+    return snapshot.docs.map((doc) => doc.data()).toList();
+  }
+
+// Check if user already reviewed a specific booking
+  Future<bool> hasReviewedBooking(String bookingId) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return true; // treat as reviewed to prevent double
+    final snapshot = await _firestore
+        .collection('reviews')
+        .where('bookingId', isEqualTo: bookingId)
+        .where('reviewerUid', isEqualTo: user.uid)
+        .limit(1)
+        .get();
+    return snapshot.docs.isNotEmpty;
+  }
+
+// Get all reviews for an item
+  Future<List<Map<String, dynamic>>> getReviewsForItem(String itemId) async {
+    final snapshot = await _firestore
+        .collection('reviews')
+        .where('itemId', isEqualTo: itemId)
+        .orderBy('timestamp', descending: true)
+        .get();
+    return snapshot.docs.map((doc) => doc.data()).toList();
+  }
+
+// Get average rating for an item
+  Future<double> getAverageRating(String itemId) async {
+    final snapshot = await _firestore
+        .collection('reviews')
+        .where('itemId', isEqualTo: itemId)
+        .get();
+    if (snapshot.docs.isEmpty) return 0.0;
+    double total = 0;
+    for (var doc in snapshot.docs) {
+      total += (doc.data()['rating'] as num?)?.toDouble() ?? 0;
+    }
+    return total / snapshot.docs.length;
+  }
+
+  Map<String, DateTime?> _activeRentalEnds = {};
+  Map<String, DateTime?> get activeRentalEnds => _activeRentalEnds;
+
+  /// Load all future bookings that affect current availability
+  Future<void> _loadActiveRentals() async {
+    final now = DateTime.now();
+    final snapshot = await _firestore
+        .collection('bookings')
+        .where('rentedUntil', isGreaterThan: Timestamp.fromDate(now))
+        .get();
+
+    Map<String, DateTime?> ends = {};
+    for (var doc in snapshot.docs) {
+      final data = doc.data();
+      final itemId = data['itemId'] as String?;
+      final rentedUntil = (data['rentedUntil'] as Timestamp?)?.toDate();
+      if (itemId == null || rentedUntil == null) continue;
+
+      // Parse booking start
+      final bDate = (data['bookingDate'] as Timestamp).toDate();
+      final bTimeStr = data['bookingTime'] as String? ?? '00:00';
+      final parts = bTimeStr.split(':');
+      final bStart = DateTime(
+        bDate.year, bDate.month, bDate.day,
+        int.tryParse(parts[0]) ?? 0,
+        int.tryParse(parts[1]) ?? 0,
+      );
+
+      // The item is currently rented ONLY if now is between start and rentedUntil
+      if (now.isAfter(bStart) && now.isBefore(rentedUntil)) {
+        ends[itemId] = rentedUntil;   // show "Rented until ..." badge with grace end
+      }
+    }
+    _activeRentalEnds = ends;
+    notifyListeners();
+  }
+
+  bool isItemCurrentlyRented(String itemId) {
+    return _activeRentalEnds.containsKey(itemId);
+  }
+
+  DateTime? getCurrentRentalEnd(String itemId) {
+    return _activeRentalEnds[itemId];
+  }
+
+
+
 }
+
 

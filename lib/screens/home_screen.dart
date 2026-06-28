@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:rent_app/screens/booking_screen.dart';
 import '../providers/item_provider.dart';
 import '../models/item.dart';
 import 'item_detail_screen.dart';
@@ -182,15 +183,17 @@ class _ExplorePageState extends State<ExplorePage> {
 
   void _showRangeDialog(BuildContext context, ItemProvider provider) {
     double localRange = provider.maxRangeKm;
+    bool localShowRented = provider.showRentedItems;
+
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
-          title: const Text('Set Maximum Range'),
+          title: const Text('Filters'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('${localRange.toStringAsFixed(1)} km'),
+              const Text('Maximum distance:'),
               Slider(
                 value: localRange,
                 min: 1.0,
@@ -198,6 +201,14 @@ class _ExplorePageState extends State<ExplorePage> {
                 divisions: 49,
                 label: localRange.toStringAsFixed(1),
                 onChanged: (value) => setDialogState(() => localRange = value),
+              ),
+              Text('${localRange.toStringAsFixed(1)} km'),
+              const SizedBox(height: 16),
+              SwitchListTile(
+                title: const Text('Show rented items'),
+                value: localShowRented,
+                onChanged: (value) => setDialogState(() => localShowRented = value),
+                contentPadding: EdgeInsets.zero,
               ),
             ],
           ),
@@ -209,6 +220,7 @@ class _ExplorePageState extends State<ExplorePage> {
             FilledButton(
               onPressed: () {
                 provider.setMaxRange(localRange);
+                provider.setShowRentedItems(localShowRented);
                 Navigator.pop(ctx);
               },
               child: const Text('Apply'),
@@ -230,6 +242,9 @@ class ItemCard extends StatelessWidget {
     final isFav = provider.isFavorite(item.docId!);
     final double? distance = provider.getDistanceInKm(item.latitude, item.longitude);
     final bool inRange = distance != null && distance <= provider.maxRangeKm;
+    final rented = provider.isItemCurrentlyRented(item.docId!);
+    final rentalEnd = provider.getCurrentRentalEnd(item.docId!);
+
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -246,17 +261,28 @@ class ItemCard extends StatelessWidget {
           children: [
             Stack(
               children: [
-                Image.network(
-                  item.imageUrl,
+                // Swipeable images
+                SizedBox(
                   height: 180,
                   width: double.infinity,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => Container(
-                    height: 180,
+                  child: item.imageUrls.isNotEmpty
+                      ? PageView.builder(
+                    itemCount: item.imageUrls.length,
+                    itemBuilder: (_, index) => Image.network(
+                      item.imageUrls[index],
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        color: Colors.grey.shade300,
+                        child: const Icon(Icons.image_not_supported, size: 48),
+                      ),
+                    ),
+                  )
+                      : Container(
                     color: Colors.grey.shade300,
                     child: const Icon(Icons.image_not_supported, size: 48),
                   ),
                 ),
+                // Favorite button
                 Positioned(
                   top: 8,
                   right: 8,
@@ -271,7 +297,26 @@ class ItemCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (!inRange)
+                // Rented badge (priority) or Outside range
+                if (rented)
+                  Positioned(
+                    top: 8,
+                    left: 8,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade700,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        rentalEnd != null
+                            ? 'Rented until ${rentalEnd.day}/${rentalEnd.month} ${formatTime12h(TimeOfDay(hour: rentalEnd.hour, minute: rentalEnd.minute))}'
+                            : 'RENTED',
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                      ),
+                    ),
+                  )
+                else if (!inRange)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -316,6 +361,18 @@ class ItemCard extends StatelessWidget {
                       ),
                     ],
                   ),
+                  const SizedBox(height: 4),  // small gap
+                  // Average rating row
+                  Row(
+                    children: [
+                      const Icon(Icons.star, size: 14, color: Colors.amber),
+                      const SizedBox(width: 2),
+                      Text(
+                        (provider.averageRatings[item.docId] ?? 0.0).toStringAsFixed(1),
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -324,4 +381,10 @@ class ItemCard extends StatelessWidget {
       ),
     );
   }
+}
+String formatTime12h(TimeOfDay time) {
+  final hour = time.hourOfPeriod == 0 ? 12 : time.hourOfPeriod;
+  final minute = time.minute.toString().padLeft(2, '0');
+  final period = time.period == DayPeriod.am ? 'AM' : 'PM';
+  return '$hour:$minute $period';
 }

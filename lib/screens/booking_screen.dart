@@ -1,5 +1,8 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../models/item.dart';
+import '../providers/item_provider.dart';
 import 'payment_screen.dart';
 
 class BookingScreen extends StatefulWidget {
@@ -47,6 +50,8 @@ class _BookingScreenState extends State<BookingScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final provider = context.read<ItemProvider>();
+
     return Scaffold(
       appBar: AppBar(title: const Text('Book This Item')),
       body: Padding(
@@ -56,7 +61,7 @@ class _BookingScreenState extends State<BookingScreen> {
           children: [
             Text(widget.item.title, style: Theme.of(context).textTheme.headlineSmall),
             const SizedBox(height: 16),
-            // Start Date
+            // Start Date & Time pickers
             Row(
               children: [
                 Expanded(
@@ -74,7 +79,7 @@ class _BookingScreenState extends State<BookingScreen> {
                     onPressed: _pickTime,
                     icon: const Icon(Icons.access_time),
                     label: Text(_startTime != null
-                        ? _startTime!.format(context)
+                        ? formatTime12h(_startTime!)
                         : 'Pick time'),
                   ),
                 ),
@@ -123,6 +128,48 @@ class _BookingScreenState extends State<BookingScreen> {
                 ),
               ],
             ),
+
+            // Existing bookings list
+            const SizedBox(height: 16),
+            FutureBuilder<List<Map<String, dynamic>>>(
+              future: provider.getFutureBookingsForItem(widget.item.docId!),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                final bookings = snapshot.data ?? [];
+                if (bookings.isEmpty) {
+                  return const Text('No existing bookings yet.',
+                      style: TextStyle(color: Colors.grey));
+                }
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Currently booked slots:',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    ...bookings.map((b) {
+                      final bDate = (b['bookingDate'] as Timestamp).toDate();
+                      final bTime = b['bookingTime'] as String? ?? '00:00';
+                      final bStart = DateTime(
+                          bDate.year, bDate.month, bDate.day,
+                          int.parse(bTime.split(':')[0]),
+                          int.parse(bTime.split(':')[1]));
+                      final rentedUntil = (b['rentedUntil'] as Timestamp).toDate(); // already includes grace
+                      return ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.event_busy, color: Colors.red),
+                        title: Text(
+                          '${bStart.day}/${bStart.month} ${formatTime12h(TimeOfDay(hour: bStart.hour, minute: bStart.minute))} → '
+                              '${rentedUntil.day}/${rentedUntil.month} ${formatTime12h(TimeOfDay(hour: rentedUntil.hour, minute: rentedUntil.minute))}',
+                        ),
+                      );
+                    }),
+                  ],
+                );
+              },
+            ),
+
             const Spacer(),
             // Total and proceed button
             Container(
@@ -171,4 +218,10 @@ class _BookingScreenState extends State<BookingScreen> {
       ),
     );
   }
+}
+String formatTime12h(TimeOfDay time) {
+  final hour = time.hourOfPeriod == 0 ? 12 : time.hourOfPeriod;
+  final minute = time.minute.toString().padLeft(2, '0');
+  final period = time.period == DayPeriod.am ? 'AM' : 'PM';
+  return '$hour:$minute $period';
 }

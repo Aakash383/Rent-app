@@ -52,7 +52,7 @@ class FavoritesScreen extends StatelessWidget {
               leading: ClipRRect(
                 borderRadius: BorderRadius.circular(8),
                 child: Image.network(
-                  item.imageUrl,
+                  item.imageUrls.isNotEmpty ? item.imageUrls.first : '',
                   width: 60,
                   height: 60,
                   fit: BoxFit.cover,

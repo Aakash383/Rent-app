@@ -2,8 +2,10 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:latlong2/latlong.dart';
 import '../providers/item_provider.dart';
 import '../models/item.dart';
+import 'location_picker_screen.dart';
 
 class AddItemScreen extends StatefulWidget {
   const AddItemScreen({super.key});
@@ -20,38 +22,53 @@ class _AddItemScreenState extends State<AddItemScreen> {
   final _dayPriceController = TextEditingController();
   final _contactController = TextEditingController();
 
-  File? _imageFile;
+  List<File> _imageFiles = [];
   bool _uploading = false;
   final ImagePicker _picker = ImagePicker();
+  LatLng? _pickedLocation;
 
-  Future<void> _pickImage(ImageSource source) async {
-    final XFile? image = await _picker.pickImage(source: source);
-    if (image != null) setState(() => _imageFile = File(image.path));
+  Future<void> _pickImages() async {
+    final List<XFile> images = await _picker.pickMultiImage();
+    if (images.isNotEmpty) {
+      setState(() {
+        _imageFiles = images.map((e) => File(e.path)).toList();
+      });
+    }
+  }
+
+  Future<void> _pickLocation() async {
+    final result = await Navigator.push<LatLng>(
+      context,
+      MaterialPageRoute(builder: (_) => const LocationPickerScreen()),
+    );
+    if (result != null) {
+      setState(() => _pickedLocation = result);
+    }
   }
 
   Future<void> _submit() async {
     if (_formKey.currentState!.validate()) {
+      if (_pickedLocation == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please pick a location on the map')),
+        );
+        return;
+      }
       setState(() => _uploading = true);
       try {
         final provider = context.read<ItemProvider>();
-        // Ensure we have a fresh location
-        await provider.refreshLocation();
-        if (provider.userLat == null || provider.userLng == null) {
-          throw Exception('Unable to get current location. Please enable GPS and try again.');
-        }
-
         final newItem = RentItem(
           title: _titleController.text.trim(),
           description: _descController.text.trim(),
-          imageUrl: '', // will be replaced
+          imageUrls: [], // will be filled by upload
           pricePerHour: double.parse(_hourPriceController.text),
           pricePerDay: double.parse(_dayPriceController.text),
-          latitude: provider.userLat!,    // auto-set
-          longitude: provider.userLng!,
+          latitude: _pickedLocation!.latitude,
+          longitude: _pickedLocation!.longitude,
           renterContact: _contactController.text.trim(),
-          ownerUid: '', // provider will fill
+          ownerUid: '', // provider fills
         );
-        await provider.addItem(newItem, _imageFile?.path);
+        await provider.addItem(newItem, _imageFiles.map((f) => f.path).toList());
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -62,7 +79,10 @@ class _AddItemScreenState extends State<AddItemScreen> {
           _hourPriceController.clear();
           _dayPriceController.clear();
           _contactController.clear();
-          setState(() => _imageFile = null);
+          setState(() {
+            _imageFiles = [];
+            _pickedLocation = null;
+          });
         }
       } catch (e) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -84,29 +104,44 @@ class _AddItemScreenState extends State<AddItemScreen> {
           key: _formKey,
           child: Column(
             children: [
+              // Image picker
               GestureDetector(
-                onTap: () => _pickImage(ImageSource.gallery),
+                onTap: _pickImages,
                 child: Container(
-                  height: 200,
+                  height: 150,
                   width: double.infinity,
                   decoration: BoxDecoration(
                     border: Border.all(color: Colors.grey),
                     borderRadius: BorderRadius.circular(12),
-                    image: _imageFile != null
-                        ? DecorationImage(image: FileImage(_imageFile!), fit: BoxFit.cover)
-                        : null,
                   ),
-                  child: _imageFile == null
-                      ? const Column(
+                  child: _imageFiles.isNotEmpty
+                      ? ListView.builder(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: _imageFiles.length,
+                    itemBuilder: (_, index) => Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Image.file(_imageFiles[index], width: 100, fit: BoxFit.cover),
+                    ),
+                  )
+                      : const Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Icon(Icons.add_a_photo, size: 48, color: Colors.grey),
                       SizedBox(height: 8),
-                      Text('Tap to select image'),
+                      Text('Tap to select images'),
                     ],
-                  )
-                      : null,
+                  ),
                 ),
+              ),
+              const SizedBox(height: 16),
+              // Location picker
+              ListTile(
+                leading: const Icon(Icons.location_on),
+                title: Text(_pickedLocation == null
+                    ? 'Pick location on map'
+                    : 'Location selected'),
+                trailing: const Icon(Icons.map),
+                onTap: _pickLocation,
               ),
               const SizedBox(height: 16),
               TextFormField(
